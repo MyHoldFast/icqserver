@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""
+adduser — быстрое создание пользователя в icq_server.db
+
+Примеры:
+  ./adduser 123456 secret
+  ./adduser 123456 secret --nick Vasya
+  ./adduser 123456 secret --db /path/to/icq_server.db
+  ./adduser 123456 secret --force   # сменить пароль, если UIN уже есть
+"""
+
+import argparse
+import os
+import sqlite3
+import sys
+
+DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icq_server.db")
+
+SSI_MASTER_GROUP_ID = 0
+SSI_GENERAL_GROUP_ID = 1
+SSI_GENERAL_GROUP_NAME = "General"
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    uin TEXT PRIMARY KEY,
+    password TEXT NOT NULL DEFAULT '',
+    ssi_mod_date INTEGER NOT NULL DEFAULT 0,
+    ssi_item_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS profiles (
+    uin TEXT PRIMARY KEY REFERENCES users(uin) ON DELETE CASCADE,
+    nick TEXT NOT NULL DEFAULT '',
+    first_name TEXT NOT NULL DEFAULT '',
+    last_name TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    city TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '',
+    fax TEXT NOT NULL DEFAULT '',
+    address TEXT NOT NULL DEFAULT '',
+    cell_phone TEXT NOT NULL DEFAULT '',
+    age INTEGER NOT NULL DEFAULT 0,
+    gender TEXT NOT NULL DEFAULT '',
+    home_page TEXT NOT NULL DEFAULT '',
+    birthday TEXT NOT NULL DEFAULT '',
+    about TEXT NOT NULL DEFAULT '',
+    work_city TEXT NOT NULL DEFAULT '',
+    work_state TEXT NOT NULL DEFAULT '',
+    work_phone TEXT NOT NULL DEFAULT '',
+    work_fax TEXT NOT NULL DEFAULT '',
+    work_addr TEXT NOT NULL DEFAULT '',
+    work_name TEXT NOT NULL DEFAULT '',
+    work_dep TEXT NOT NULL DEFAULT '',
+    work_pos TEXT NOT NULL DEFAULT '',
+    auth_required INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS groups_tbl (
+    uin TEXT NOT NULL REFERENCES users(uin) ON DELETE CASCADE,
+    group_id INTEGER NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (uin, group_id)
+);
+"""
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Add ICQ user to icq_server.db")
+    ap.add_argument("uin", help="UIN (digits)")
+    ap.add_argument("password", help="Plain-text password")
+    ap.add_argument("--db", default=DEFAULT_DB, help=f"DB path (default: {DEFAULT_DB})")
+    ap.add_argument("--nick", default="", help="Optional nickname")
+    ap.add_argument("--force", action="store_true",
+                    help="If UIN exists, update password (and nick if given)")
+    args = ap.parse_args()
+
+    uin = args.uin.strip()
+    if not uin.isdigit():
+        print(f"error: UIN must be digits, got {uin!r}", file=sys.stderr)
+        return 1
+    if not args.password:
+        print("error: empty password", file=sys.stderr)
+        return 1
+
+    db_path = os.path.abspath(args.db)
+    os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        conn.executescript(SCHEMA)
+        # migrate old DBs missing ssi columns
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(users)")}
+        if "ssi_mod_date" not in cols:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN ssi_mod_date INTEGER NOT NULL DEFAULT 0"
+            )
+        if "ssi_item_count" not in cols:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN ssi_item_count INTEGER NOT NULL DEFAULT 0"
+            )
+
+        row = conn.execute("SELECT uin FROM users WHERE uin = ?", (uin,)).fetchone()
+        if row:
+            if not args.force:
+                print(f"error: UIN {uin} already exists (use --force to update)",
+                      file=sys.stderr)
+                return 1
+            conn.execute(
+                "UPDATE users SET password = ? WHERE uin = ?",
+                (args.password, uin),
+            )
+            if args.nick:
+                conn.execute(
+                    "UPDATE profiles SET nick = ? WHERE uin = ?",
+                    (args.nick, uin),
+                )
+            conn.commit()
+            print(f"updated UIN {uin} in {db_path}")
+            return 0
+
+        conn.execute(
+            "INSERT INTO users (uin, password) VALUES (?, ?)",
+            (uin, args.password),
+        )
+        conn.execute(
+            "INSERT INTO profiles (uin, nick) VALUES (?, ?)",
+            (uin, args.nick or ""),
+        )
+        # master (empty name) + General — как ensure_default_groups()
+        conn.execute(
+            "INSERT OR IGNORE INTO groups_tbl (uin, group_id, name) VALUES (?, ?, ?)",
+            (uin, SSI_MASTER_GROUP_ID, ""),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO groups_tbl (uin, group_id, name) VALUES (?, ?, ?)",
+            (uin, SSI_GENERAL_GROUP_ID, SSI_GENERAL_GROUP_NAME),
+        )
+        conn.commit()
+        print(f"created UIN {uin} in {db_path}")
+        return 0
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -275,11 +275,11 @@ func (s *Session) handleBosAuth(cookie []byte) {
 	s.status = StatusOnline
 	s.loginTs = time.Now()
 
-	if old := s.server.getSession(uin); old != nil && old != s {
+	old := s.server.replaceSession(uin, s)
+	if old != nil && old != s {
 		old.stop()
 		old.conn.Close()
 	}
-	s.server.setSession(uin, s)
 
 	var famPayload []byte
 	for _, id := range ServerFamilyIDs {
@@ -510,7 +510,10 @@ func (s *Session) snac0b(sub uint16, reqid uint32, data []byte) {
 func (s *Session) snac03(sub uint16, reqid uint32, data []byte) {
 	switch sub {
 	case 0x0002:
-		s.sendSnac(0x0003, 0x0003, make([]byte, 8), noReqID, 0)
+		rights := makeTLV(0x0001, beU16(0x0258))
+		rights = append(rights, makeTLV(0x0002, beU16(0x02EE))...)
+		rights = append(rights, makeTLV(0x0003, beU16(0x0200))...)
+		s.sendSnac(0x0003, 0x0003, rights, int64(reqid), 0)
 	default:
 	}
 }
@@ -606,7 +609,7 @@ func (s *Session) notifyOthersOnline() {
 	}
 	if _, ok := user.Contacts[s.uin]; ok {
 		if privacyVisible(user, s.uin, true) {
-			s.spawn(func() { s.sendBuddyOnline(s.uin, s.status, s.caps, s.xstatusRaw) })
+			s.sendBuddyOnline(s.uin, s.status, s.caps, s.xstatusRaw)
 		}
 	}
 	s.server.forEachSession(func(otherUin string, sess *Session) {
@@ -619,7 +622,7 @@ func (s *Session) notifyOthersOnline() {
 		}
 		if _, ok := otherUser.Contacts[s.uin]; ok {
 			if privacyVisible(user, otherUin, true) && !pendingAuthHidesPresence(otherUser, s.uin) {
-				s.spawn(func() { sess.sendBuddyOnline(s.uin, s.status, s.caps, s.xstatusRaw) })
+				sess.sendBuddyOnline(s.uin, s.status, s.caps, s.xstatusRaw)
 			}
 		}
 	})
@@ -635,7 +638,7 @@ func (s *Session) sendPresenceFull() {
 	}
 	if _, ok := user.Contacts[s.uin]; ok {
 		if privacyVisible(user, s.uin, true) {
-			s.spawn(func() { s.sendBuddyOnline(s.uin, s.status, s.caps, s.xstatusRaw) })
+			s.sendBuddyOnline(s.uin, s.status, s.caps, s.xstatusRaw)
 		}
 	}
 	s.server.forEachSession(func(otherUin string, sess *Session) {
@@ -648,7 +651,7 @@ func (s *Session) sendPresenceFull() {
 		}
 		if _, ok := user.Contacts[otherUin]; ok {
 			if privacyVisible(otherUser, s.uin, true) && !pendingAuthHidesPresence(user, otherUin) {
-				s.spawn(func() { s.sendBuddyOnline(otherUin, sess.status, sess.caps, sess.xstatusRaw) })
+				s.sendBuddyOnline(otherUin, sess.status, sess.caps, sess.xstatusRaw)
 			}
 		}
 	})
@@ -671,7 +674,7 @@ func (s *Session) broadcastPresence() {
 	}
 	if _, ok := user.Contacts[s.uin]; ok {
 		if privacyVisible(user, s.uin, true) {
-			s.spawn(func() { s.sendBuddyOnline(s.uin, s.status, s.caps, s.xstatusRaw) })
+			s.sendBuddyOnline(s.uin, s.status, s.caps, s.xstatusRaw)
 		}
 	}
 	s.server.forEachSession(func(otherUin string, sess *Session) {
@@ -684,33 +687,8 @@ func (s *Session) broadcastPresence() {
 		}
 		if _, ok := otherUser.Contacts[s.uin]; ok {
 			if privacyVisible(user, otherUin, true) && !pendingAuthHidesPresence(otherUser, s.uin) {
-				s.spawn(func() { sess.sendBuddyOnline(s.uin, s.status, s.caps, s.xstatusRaw) })
+				sess.sendBuddyOnline(s.uin, s.status, s.caps, s.xstatusRaw)
 			}
-		}
-	})
-}
-
-func (s *Session) broadcastOffline() {
-	if s.uin == "" {
-		return
-	}
-	user, err := s.server.Storage.GetUser(s.uin)
-	if err != nil || user == nil {
-		return
-	}
-	if _, ok := user.Contacts[s.uin]; ok {
-		s.spawn(func() { s.sendBuddyOffline(s.uin) })
-	}
-	s.server.forEachSession(func(otherUin string, sess *Session) {
-		if otherUin == s.uin || s.uin == "" {
-			return
-		}
-		otherUser, err := s.server.Storage.GetUser(otherUin)
-		if err != nil || otherUser == nil {
-			return
-		}
-		if _, ok := otherUser.Contacts[s.uin]; ok {
-			s.spawn(func() { sess.sendBuddyOffline(s.uin) })
 		}
 	})
 }

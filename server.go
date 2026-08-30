@@ -82,6 +82,14 @@ func (s *Server) setSession(uin string, sess *Session) {
 	s.mu.Unlock()
 }
 
+func (s *Server) replaceSession(uin string, sess *Session) *Session {
+	s.mu.Lock()
+	old := s.sessions[uin]
+	s.sessions[uin] = sess
+	s.mu.Unlock()
+	return old
+}
+
 func (s *Server) deleteSessionIfSame(uin string, sess *Session) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

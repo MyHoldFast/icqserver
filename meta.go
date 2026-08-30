@@ -434,9 +434,6 @@ func (s *Session) handleMetaSearchByUin2(uinInt uint32, seqID uint16, payload []
 		t := getLE16(payload, pos)
 		ln := int(getLE16(payload, pos+2))
 		pos += 4
-		if pos+ln > len(payload) {
-			break
-		}
 		avail := len(payload) - pos
 		take := ln
 		if take > avail {

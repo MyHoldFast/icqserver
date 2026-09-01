@@ -745,26 +745,38 @@ func (s *Session) snac04(sub uint16, reqid uint32, data []byte) {
 		}
 	case 0x000B:
 		s.handleServerRelay(data)
+	case 0x000C:
+		if len(data) >= 11 {
+			channel := getBE16(data, 8)
+			if channel != 2 {
+				s.relayGenericICBM(sub, data)
+			}
+		}
 	case 0x0014:
 		s.handleTyping(data)
 	default:
-		if len(data) >= 11 {
-			cookie := data[:8]
-			channel := getBE16(data, 8)
-			pos := 10
-			uinLen := int(data[pos])
-			pos++
-			toUin := string(data[pos : pos+uinLen])
-			pos += uinLen
-			rest := data[pos:]
-			if target := s.server.getSession(toUin); target != nil {
-				fwd := append(append([]byte{}, cookie...), beU16(channel)...)
-				fwd = append(fwd, byte(len(s.uin)))
-				fwd = append(fwd, []byte(s.uin)...)
-				fwd = append(fwd, rest...)
-				s.spawn(func() { target.sendSnac(0x0004, sub, fwd, noReqID, 0) })
-			}
-		}
+		s.relayGenericICBM(sub, data)
+	}
+}
+
+func (s *Session) relayGenericICBM(sub uint16, data []byte) {
+	if len(data) < 11 {
+		return
+	}
+	cookie := data[:8]
+	channel := getBE16(data, 8)
+	pos := 10
+	uinLen := int(data[pos])
+	pos++
+	toUin := string(data[pos : pos+uinLen])
+	pos += uinLen
+	rest := data[pos:]
+	if target := s.server.getSession(toUin); target != nil {
+		fwd := append(append([]byte{}, cookie...), beU16(channel)...)
+		fwd = append(fwd, byte(len(s.uin)))
+		fwd = append(fwd, []byte(s.uin)...)
+		fwd = append(fwd, rest...)
+		s.spawn(func() { target.sendSnac(0x0004, sub, fwd, noReqID, 0) })
 	}
 }
 
@@ -781,6 +793,13 @@ func (s *Session) handleSendMessage(reqid uint32, data []byte) {
 	toUin := string(data[pos : pos+uinLen])
 	pos += uinLen
 	tlvsData := data[pos:]
+
+	if _, wantsAck := parseTLVs(tlvsData)[0x0003]; wantsAck {
+		ack := append(append([]byte{}, cookie...), beU16(channel)...)
+		ack = append(ack, byte(len(toUin)))
+		ack = append(ack, []byte(toUin)...)
+		s.sendSnac(0x0004, 0x000C, ack, int64(reqid), 0)
+	}
 
 	target := s.server.getSession(toUin)
 	if target != nil {
@@ -923,10 +942,7 @@ func (s *Session) extractMessageText(channel uint16, tlvsData []byte) string {
 		if charset == 2 {
 			return decodeUTF16BE(textData)
 		}
-		if s, ok := tryUTF8(textData); ok {
-			return s
-		}
-		return decodeCP1251(textData)
+		return decodeMessageText(textData)
 	} else if channel == 2 {
 		raw5, ok := tlvs[0x0005]
 		if !ok || len(raw5) < 26 {
@@ -944,12 +960,9 @@ func (s *Session) extractMessageText(channel uint16, tlvsData []byte) string {
 			if p+4+l > len(raw2711) {
 				break
 			}
-			if t == 0x0001 && l > 0 {
+			if (t == 0x0001 || t == 0x0021) && l > 0 {
 				text := raw2711[p+4 : p+4+l]
-				if str, ok := tryUTF8(text); ok {
-					return str
-				}
-				return decodeCP1251(text)
+				return decodeMessageText(text)
 			}
 			p += 4 + l
 		}

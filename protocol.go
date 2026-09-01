@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/md5"
 	"encoding/binary"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/text/encoding"
 	"golang.org/x/text/encoding/charmap"
 )
 
@@ -91,6 +93,165 @@ func decodeCP1251(b []byte) string {
 		return string(b)
 	}
 	return string(out)
+}
+
+var rtfSkipDestinations = map[string]bool{
+	"fonttbl": true, "colortbl": true, "stylesheet": true, "info": true,
+	"generator": true, "pict": true, "object": true, "footnote": true,
+	"header": true, "footer": true, "headerl": true, "headerr": true,
+	"footerl": true, "footerr": true, "filetbl": true, "listtable": true,
+	"revtbl": true, "rsidtbl": true, "themedata": true,
+	"colorschememapping": true, "latentstyles": true, "datastore": true,
+	"xmlnstbl": true, "wgrffmtfilter": true, "panose": true, "shpinst": true,
+	"sp": true, "nonshppict": true, "blipuid": true, "bkmkstart": true,
+	"bkmkend": true, "listoverridetable": true, "listlevel": true,
+}
+
+var rtfCodepageMap = map[int]encoding.Encoding{
+	1250: charmap.Windows1250, 1251: charmap.Windows1251, 1252: charmap.Windows1252,
+	1253: charmap.Windows1253, 1254: charmap.Windows1254, 1255: charmap.Windows1255,
+	1256: charmap.Windows1256, 1257: charmap.Windows1257, 1258: charmap.Windows1258,
+}
+
+var rtfAnsicpgRe = regexp.MustCompile(`\\ansicpg(\d+)`)
+var rtfCtrlWordRe = regexp.MustCompile(`^\\([a-zA-Z]+)(-?\d+)?( )?`)
+var rtfHexEscRe = regexp.MustCompile(`^\\'([0-9a-fA-F]{2})`)
+var rtfGroupStartRe = regexp.MustCompile(`^\{(\\\*)?\\([a-zA-Z]+)`)
+
+func rtfToText(raw []byte) (string, bool) {
+	s := string(raw)
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "{\\rtf") {
+		return "", false
+	}
+	var enc encoding.Encoding = cp1251
+	if m := rtfAnsicpgRe.FindStringSubmatch(s); m != nil {
+		if cp, err := strconv.Atoi(m[1]); err == nil {
+			if e, ok := rtfCodepageMap[cp]; ok {
+				enc = e
+			}
+		}
+	}
+	var out []byte
+	depth := 0
+	skipFrom := -1
+	i, n := 0, len(s)
+	for i < n {
+		ch := s[i]
+		if ch == '\\' {
+			rest := s[i:]
+			if len(rest) > 40 {
+				rest = rest[:40]
+			}
+			if m := rtfHexEscRe.FindStringSubmatch(s[i:min(i+4, n)]); m != nil {
+				if skipFrom < 0 {
+					v, _ := strconv.ParseUint(m[1], 16, 8)
+					out = append(out, byte(v))
+				}
+				i += len(m[0])
+				continue
+			}
+			if m := rtfCtrlWordRe.FindStringSubmatch(rest); m != nil {
+				word := m[1]
+				if skipFrom < 0 {
+					switch word {
+					case "par", "line":
+						out = append(out, '\n')
+					case "tab":
+						out = append(out, '\t')
+					case "u":
+						if m[2] != "" {
+							if cp, err := strconv.Atoi(m[2]); err == nil {
+								if cp < 0 {
+									cp += 65536
+								}
+								out = append(out, []byte(string(rune(cp)))...)
+							}
+						}
+					}
+				}
+				i += len(m[0])
+				continue
+			}
+			if i+1 < n {
+				if skipFrom < 0 {
+					out = append(out, s[i+1])
+				}
+				i += 2
+			} else {
+				i++
+			}
+			continue
+		}
+		if ch == '{' {
+			depth++
+			rest := s[i:]
+			if len(rest) > 40 {
+				rest = rest[:40]
+			}
+			word := ""
+			if m := rtfGroupStartRe.FindStringSubmatch(rest); m != nil {
+				word = m[2]
+			}
+			if skipFrom < 0 && rtfSkipDestinations[word] {
+				skipFrom = depth
+			}
+			i++
+			continue
+		}
+		if ch == '}' {
+			if skipFrom >= 0 && depth == skipFrom {
+				skipFrom = -1
+			}
+			if depth > 0 {
+				depth--
+			}
+			i++
+			continue
+		}
+		if skipFrom < 0 {
+			out = append(out, ch)
+		}
+		i++
+	}
+	text, err := enc.NewDecoder().Bytes(out)
+	if err != nil {
+		text = out
+	}
+	return strings.TrimSpace(string(text)), true
+}
+
+func decodeMessageText(raw []byte) string {
+	clean := bytes.TrimRight(raw, "\x00")
+	clean = bytes.TrimSpace(clean)
+	if len(clean) == 0 {
+		return ""
+	}
+	if bytes.HasPrefix(bytes.TrimSpace(clean), []byte("{\\rtf")) {
+		if text, ok := rtfToText(clean); ok {
+			return text
+		}
+	}
+	if len(clean)%2 == 0 {
+		isUTF16 := true
+		hasNonZeroOdd := false
+		for i := 0; i < len(clean); i += 2 {
+			if clean[i] != 0x00 && clean[i] != 0x04 {
+				isUTF16 = false
+				break
+			}
+			if clean[i+1] != 0x00 {
+				hasNonZeroOdd = true
+			}
+		}
+		if isUTF16 && hasNonZeroOdd {
+			return decodeUTF16BE(clean)
+		}
+	}
+	if s, ok := tryUTF8(clean); ok {
+		return s
+	}
+	return decodeCP1251(clean)
 }
 
 func makeAsciizLE(text string) []byte {

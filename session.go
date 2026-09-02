@@ -818,7 +818,7 @@ func (s *Session) handleSendMessage(reqid uint32, data []byte) {
 		return
 	}
 
-	if channel != 1 {
+	if channel != 1 && channel != 4 {
 		return
 	}
 	text := s.extractMessageText(channel, tlvsData)
@@ -966,8 +966,30 @@ func (s *Session) extractMessageText(channel uint16, tlvsData []byte) string {
 			}
 			p += 4 + l
 		}
+	} else if channel == 4 {
+		raw5, ok := tlvs[0x0005]
+		if !ok || len(raw5) < 8 {
+			return ""
+		}
+		strLen := int(getLE16(raw5, 6))
+		if 8+strLen > len(raw5) {
+			strLen = len(raw5) - 8
+		}
+		if strLen <= 0 {
+			return ""
+		}
+		strBytes := raw5[8 : 8+strLen]
+		strBytes = bytesTrimRightNull(strBytes)
+		return decodeMessageText(strBytes)
 	}
 	return ""
+}
+
+func bytesTrimRightNull(b []byte) []byte {
+	for len(b) > 0 && b[len(b)-1] == 0 {
+		b = b[:len(b)-1]
+	}
+	return b
 }
 
 func tryUTF8(b []byte) (string, bool) {

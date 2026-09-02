@@ -685,7 +685,7 @@ func ensureMsgFeaturesTLV(channel uint16, rawTLVsData []byte) []byte {
 				ip += 4 + il
 			}
 			if !hasFeatures {
-				featuresTlv := makeTLV(0x0501, []byte{0x01})
+				featuresTlv := makeTLV(0x0501, []byte{0x00})
 				insertAt := first0101Pos
 				if insertAt == -1 {
 					insertAt = 0

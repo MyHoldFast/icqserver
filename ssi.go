@@ -380,6 +380,23 @@ func (s *Session) applyPrivacyChange() {
 	})
 }
 
+func (s *Session) deliverPendingAuthRequests() {
+	reqs := s.server.Storage.GetPendingAuthRequests(s.uin)
+	if len(reqs) == 0 {
+		return
+	}
+	for _, r := range reqs {
+		uinB := []byte(r.FromUIN)
+		reasonB := []byte(r.Reason)
+		fwd := append([]byte{byte(len(uinB))}, uinB...)
+		fwd = append(fwd, beU16(uint16(len(reasonB)))...)
+		fwd = append(fwd, reasonB...)
+		fwd = append(fwd, beU16(0)...)
+		s.sendSnac(0x0013, SsiAuthReq, fwd, noReqID, 0)
+	}
+	s.server.Storage.ClearPendingAuthRequests(s.uin)
+}
+
 func (s *Session) handleAuthSendReq(data []byte) {
 	defer func() { recover() }()
 	pos := 0
@@ -395,6 +412,7 @@ func (s *Session) handleAuthSendReq(data []byte) {
 	reason := string(data[pos : pos+reasonLen])
 	target := s.server.getSession(toUin)
 	if target == nil {
+		s.server.Storage.AddPendingAuthRequest(toUin, s.uin, reason)
 		return
 	}
 	uinB := []byte(s.uin)

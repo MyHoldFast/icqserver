@@ -352,6 +352,7 @@ func (s *Session) snac01(sub uint16, reqid uint32, data []byte) {
 	case 0x0002:
 		s.clientReadySeen = true
 		s.broadcastOnline()
+		s.deliverPendingAuthRequests()
 		if !s.statsSent {
 			s.sendSnac(0x000B, 0x0002, beU16(0x0001), noReqID, 0)
 			s.statsSent = true

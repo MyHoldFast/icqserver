@@ -97,6 +97,14 @@ CREATE TABLE IF NOT EXISTS offline_messages (
     msg_type INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_offline_to_uin ON offline_messages(to_uin);
+CREATE TABLE IF NOT EXISTS pending_auth_requests (
+    to_uin TEXT NOT NULL REFERENCES users(uin) ON DELETE CASCADE,
+    from_uin TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    timestamp REAL NOT NULL,
+    PRIMARY KEY (to_uin, from_uin)
+);
+CREATE INDEX IF NOT EXISTS idx_pending_auth_to_uin ON pending_auth_requests(to_uin);
 `
 
 type Storage struct {
@@ -726,6 +734,40 @@ func (s *Storage) ClearOfflineMsgs(uin string) {
 	s.db.Exec("DELETE FROM offline_messages WHERE to_uin=?", uin)
 }
 
+func (s *Storage) AddPendingAuthRequest(toUin, fromUin, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var one int
+	if err := s.db.QueryRow("SELECT 1 FROM users WHERE uin=?", toUin).Scan(&one); err != nil {
+		return
+	}
+	s.db.Exec("INSERT OR REPLACE INTO pending_auth_requests (to_uin, from_uin, reason, timestamp) VALUES (?, ?, ?, ?)",
+		toUin, fromUin, reason, float64(time.Now().UnixNano())/1e9)
+}
+
+func (s *Storage) GetPendingAuthRequests(uin string) []PendingAuthRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query("SELECT from_uin, reason, timestamp FROM pending_auth_requests WHERE to_uin=? ORDER BY timestamp", uin)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []PendingAuthRequest
+	for rows.Next() {
+		var r PendingAuthRequest
+		rows.Scan(&r.FromUIN, &r.Reason, &r.Timestamp)
+		out = append(out, r)
+	}
+	return out
+}
+
+func (s *Storage) ClearPendingAuthRequests(uin string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.db.Exec("DELETE FROM pending_auth_requests WHERE to_uin=?", uin)
+}
+
 func (s *Storage) SearchUsers(c SearchCriteria, onlineUins map[string]bool) []SearchResult {
 	var clauses []string
 	var params []interface{}
@@ -762,7 +804,7 @@ func (s *Storage) SearchUsers(c SearchCriteria, onlineUins map[string]bool) []Se
 		where = "WHERE " + strings.Join(clauses, " AND ")
 	}
 	query := fmt.Sprintf(`SELECT u.uin, p.nick, p.first_name, p.last_name, p.email, p.auth_required,
-		p.gender, p.age FROM users u JOIN profiles p ON p.uin=u.uin %s`, where)
+		p.gender, p.age FROM users u JOIN profiles p ON p.uin=u.uin %s LIMIT 1000`, where)
 
 	s.mu.Lock()
 	rows, err := s.db.Query(query, params...)
@@ -773,6 +815,9 @@ func (s *Storage) SearchUsers(c SearchCriteria, onlineUins map[string]bool) []Se
 	defer rows.Close()
 	var out []SearchResult
 	for rows.Next() {
+		if len(out) >= 100 {
+			break
+		}
 		var r SearchResult
 		var authReq int
 		var age int

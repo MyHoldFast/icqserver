@@ -21,6 +21,12 @@ type OfflineMessage struct {
 	MsgType   uint16
 }
 
+type PendingAuthRequest struct {
+	FromUIN   string
+	Reason    string
+	Timestamp float64
+}
+
 type UserProfile struct {
 	Nick         string
 	FirstName    string

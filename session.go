@@ -55,6 +55,9 @@ type Session struct {
 
 	icbmFlags map[uint16]uint32
 
+	lastKeepalive time.Time
+	keepaliveGap  time.Duration
+
 	closeOnce sync.Once
 }
 
@@ -103,8 +106,26 @@ func (s *Session) sendSnac(fam, sub uint16, payload []byte, reqid int64, flags u
 	return s.sendFlap(2, makeSnac(fam, sub, flags, r, payload))
 }
 
+func (s *Session) idleTimeout() time.Duration {
+	if s.keepaliveGap > 0 {
+		return 2*s.keepaliveGap + 10*time.Second
+	}
+	return ConnIdleTimeoutSec * time.Second
+}
+
+func (s *Session) onKeepalive() {
+	now := time.Now()
+	if !s.lastKeepalive.IsZero() {
+		gap := now.Sub(s.lastKeepalive)
+		if gap >= 5*time.Second && gap > s.keepaliveGap && 2*gap+10*time.Second < ConnIdleTimeoutSec*time.Second {
+			s.keepaliveGap = gap
+		}
+	}
+	s.lastKeepalive = now
+}
+
 func (s *Session) recvFlap() (byte, uint16, []byte, error) {
-	s.conn.SetReadDeadline(time.Now().Add(ConnIdleTimeoutSec * time.Second))
+	s.conn.SetReadDeadline(time.Now().Add(s.idleTimeout()))
 	hdr := make([]byte, 6)
 	if _, err := io.ReadFull(s.reader, hdr); err != nil {
 		return 0, 0, nil, err
@@ -115,7 +136,7 @@ func (s *Session) recvFlap() (byte, uint16, []byte, error) {
 	var body []byte
 	if size > 0 {
 		body = make([]byte, size)
-		s.conn.SetReadDeadline(time.Now().Add(ConnIdleTimeoutSec * time.Second))
+		s.conn.SetReadDeadline(time.Now().Add(s.idleTimeout()))
 		if _, err := io.ReadFull(s.reader, body); err != nil {
 			return 0, 0, nil, err
 		}
@@ -147,6 +168,7 @@ func (s *Session) Run() {
 			case 4:
 				s.stop()
 			case 5:
+				s.onKeepalive()
 			default:
 			}
 		}()
